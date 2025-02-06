@@ -19,8 +19,9 @@ bool isMetric = true; // ค่าเริ่มต้นเป็นเซน�
 
 // ตั้งเวลาสำหรับการแจ้งเตือน
 unsigned long lastNotifyTime = 0;
-const unsigned long notifyInterval = 5000; // 5 วินาที
+const unsigned long notifyInterval = 10000; // 10 วินาที
 const float MAX_DISTANCE = 700; // ระยะทางสูงสุดที่เซ็นเซอร์สามารถวัดได้ (เซนติเมตร)
+bool wifiConnected = false;
 
 void setup() {
   Serial.begin(115200);
@@ -39,43 +40,59 @@ void setup() {
 }
 
 void loop() {
-  // ตรวจสอบการกดปุ่มเพื่อเปลี่ยนหน่วย
   checkButton();
-
-  // อ่านและแสดงค่าระยะทาง
   float distance = readDistance();
   displayDistance(distance);
 
-  // ตรวจสอบเวลาผ่านไปแล้ว 10 วินาทีหรือไม่ก่อนส่งแจ้งเตือน
-  if (distance < 10 && millis() - lastNotifyTime >= notifyInterval) {
-    // แปลงระยะทางให้เป็น String ก่อนส่งไปยังฟังก์ชัน
+  if (distance < MAX_DISTANCE && millis() - lastNotifyTime >= notifyInterval) {
     String distanceStr = String(distance);
     sendLineNotification(distanceStr);
-    lastNotifyTime = millis(); // บันทึกเวลาที่แจ้งเตือนล่าสุด
+    lastNotifyTime = millis();
   }
-
-  delay(1000); // หน่วงเวลา 1 วินาทีสำหรับการอ่านค่าระยะห่าง
+  delay(1000);
 }
 
-// ฟังก์ชันเชื่อมต่อ WiFi
 void connectWiFi() {
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.println("Connecting to WiFi...");
+  lcd.setCursor(0, 0);
+  lcd.print("Connecting WiFi");
+  int attempts = 0;
+
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) { 
+    delay(500);
+    Serial.print(".");
+    attempts++;
   }
-  Serial.println("Connected to WiFi");
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi Connected");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi Connected");
+    wifiConnected = true;
+  } else {
+    Serial.println("\nWiFi Failed");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi Failed");
+    wifiConnected = false;
+  }
+  delay(2000);
 }
 
-// ฟังก์ชันตรวจสอบการกดปุ่ม
 void checkButton() {
-  if (digitalRead(BUTTON_PIN) == LOW) {
-    isMetric = !isMetric;  // สลับหน่วยการวัด
-    delay(300);  // หน่วงเวลาเล็กน้อยเพื่อป้องกันการอ่านหลายครั้ง
+  static bool lastButtonState = HIGH;
+  bool buttonState = digitalRead(BUTTON_PIN);
+
+  if (lastButtonState == HIGH && buttonState == LOW) {
+    isMetric = !isMetric;
+    Serial.print("Unit changed: ");
+    Serial.println(isMetric ? "cm" : "in");
+    delay(300);
   }
+  lastButtonState = buttonState;
 }
 
-// ฟังก์ชันอ่านค่าระยะทางจาก Ultrasonic Sensor
 float readDistance() {
   long duration;
   float distance;
@@ -89,23 +106,19 @@ float readDistance() {
   duration = pulseIn(ECHO_PIN, HIGH);
   distance = duration * 0.034 / 2;
 
-  // ตรวจสอบว่าเกิน 700 เซนติเมตรหรือไม่
   if (distance > MAX_DISTANCE) {
-    distance = MAX_DISTANCE; // ตั้งค่าระยะทางเป็น 700 cm ถ้าเกิน
+    distance = MAX_DISTANCE;
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("Over 700 Cm");
     sendLineNotification("Over 700 Cm");
   }
 
-  // แปลงหน่วยถ้าจำเป็น
   return isMetric ? distance : distance * 0.393701;
 }
 
-// ฟังก์ชันแสดงค่าระยะทางบนจอ LCD
 void displayDistance(float distance) {
   String unit = isMetric ? "cm" : "in";
-
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Distance:");
@@ -115,16 +128,23 @@ void displayDistance(float distance) {
   lcd.print(unit);
 }
 
-// ฟังก์ชันส่งแจ้งเตือนผ่าน LINE
 void sendLineNotification(String message) {
-  if (WiFi.status() == WL_CONNECTED) {
+  if (wifiConnected) {
     HTTPClient http;
     http.begin("https://notify-api.line.me/api/notify");
     http.addHeader("Content-Type", "application/x-www-form-urlencoded");
     http.addHeader("Authorization", "Bearer " + lineToken);
 
+    String unit = isMetric ? "cm" : "in";
+    message += " " + unit;
     String payload = "message=" + message;
-    http.POST(payload);
+
+    int httpResponseCode = http.POST(payload);
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+
     http.end();
+  } else {
+    Serial.println("WiFi not connected, skipping LINE notification.");
   }
 }
